@@ -1,4 +1,3 @@
-
 const $=s=>document.querySelector(s),LOGO="images/logo.webp";
 let S,QV='',UF='',DR=null;let admin=false,dirty=false,tm;try{admin=sessionStorage.getItem('adm')=='1';const th=localStorage.getItem('th');if(th)document.documentElement.dataset.theme=th}catch(_){}
 const E=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -72,15 +71,41 @@ const SF=(x={})=>[{k:'name',l:'الاسم',v:x.name},{k:'cat',l:'القسم',t:'
 const done=()=>{render();clearTimeout(tm);tm=setTimeout(save,700)};
 let tt;const tos=m=>{const e=$('#ts');if(!e)return;e.textContent=m;clearTimeout(tt);if(m&&!m.startsWith('⏳'))tt=setTimeout(()=>{e.textContent=''},5000)};
 const dl=()=>{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob(['window.DATA='+JSON.stringify(S,null,1)+';'],{type:'text/javascript'}));a.download='data.js';a.click()};
+/* ===== حفظ تلقائي إلى GitHub: كل الملفات في commit واحد =====
+   - ملف HTML للنموذج  -> models/<الصف>/s<الفصل>/<id>.html
+   - صور الأغلفة       -> images/covers/<id>.jpg
+   - صور الوحدات       -> images/units/<id>.jpg
+   - صور الهيئة        -> images/staff/<id>.jpg
+   - data/data.js يحتفظ بالمسارات فقط (بدل النصوص الضخمة وbase64) */
+let saving=false,again=false;const DONE=new Map();
+const b64t=s=>btoa(unescape(encodeURIComponent(s))),isD=v=>typeof v=='string'&&v.startsWith('data:');
+function collect(v){const files=[],jobs=[];
+const add=(p,b64,key,job)=>{const ver=DONE.get(key)||v;files.push({path:p,b64,key,ver});jobs.push(job(p+'?v='+ver))};
+const im=(o,k,p)=>{const val=o[k];if(isD(val))add(p,val.split(',')[1],p+'|'+val.length+'|'+val.slice(-40),np=>({apply:()=>{o[k]=np},undo:()=>{o[k]=val}}))};
+S.staff.forEach(x=>{if(!x.id)x.id=uid();im(x,'photo','images/staff/'+x.id+'.jpg')});
+Object.values(S.units||{}).forEach(L=>L.forEach(x=>{if(!x.id)x.id=uid();im(x,'img','images/units/'+x.id+'.jpg')}));
+Object.keys(S.grades).forEach(g=>S.grades[g].forEach((L,s)=>L.forEach(x=>{if(!x.id)x.id=uid();im(x,'img','images/covers/'+x.id+'.jpg');
+const val=x.html,f0=x.file;if(val){const p=`models/${g}/s${s+1}/${x.id}.html`;add(p,b64t(val),p+'|'+val.length+'|'+val.slice(-40),np=>({apply:()=>{x.html='';x.file=np},undo:()=>{x.html=val;x.file=f0}}))}})));
+return{files,jobs}}
+async function ghCommit(c,files,msg){const api=`https://api.github.com/repos/${c.repo}`,h={Authorization:'Bearer '+c.token,Accept:'application/vnd.github+json','Content-Type':'application/json'};
+const J=async(u,o)=>{const r=await fetch(api+u,{headers:h,...o});if(!r.ok)throw new Error(r.status+' '+u.slice(0,24));return r.json()};
+const ref=await J('/git/ref/heads/'+c.branch),cm=await J('/git/commits/'+ref.object.sha),tree=[];
+for(const f of files){const b=await J('/git/blobs',{method:'POST',body:JSON.stringify({content:f.b64,encoding:'base64'})});tree.push({path:f.path,mode:'100644',type:'blob',sha:b.sha})}
+const t=await J('/git/trees',{method:'POST',body:JSON.stringify({base_tree:cm.tree.sha,tree})}),n=await J('/git/commits',{method:'POST',body:JSON.stringify({message:msg,tree:t.sha,parents:[ref.object.sha]})});
+await J('/git/refs/heads/'+c.branch,{method:'PATCH',body:JSON.stringify({sha:n.sha})})}
 async function save(){S.v=Date.now();try{localStorage.setItem('draft',JSON.stringify(S))}catch(_){}
 let c=null;try{c=JSON.parse(localStorage.getItem('gh')||'null')}catch(_){}
 if(!c){tos('💾 محفوظ مؤقتًا في هذا المتصفح، فعّل الحفظ التلقائي من قائمة الأدمن');return}
-tos('⏳ جارٍ الحفظ…');
-try{const u=`https://api.github.com/repos/${c.repo}/contents/data/data.js`,h={Authorization:'Bearer '+c.token,Accept:'application/vnd.github+json'};
-const g=await fetch(u+'?ref='+c.branch,{headers:h});const sha=g.ok?(await g.json()).sha:undefined;
-const b=btoa(unescape(encodeURIComponent('window.DATA='+JSON.stringify(S,null,1)+';')));
-const r=await fetch(u,{method:'PUT',headers:h,body:JSON.stringify({message:'update data',content:b,sha,branch:c.branch})});
-if(!r.ok)throw new Error(r.status);tos('✅ تم الحفظ، يظهر للزوار خلال دقيقة تقريبًا')}catch(e){tos('⚠ فشل الحفظ ('+e.message+')')}}
+if(saving){again=true;return}saving=true;tos('⏳ جارٍ الحفظ…');
+try{const{files,jobs}=collect(Date.now());
+jobs.forEach(j=>j.apply());const js='window.DATA='+JSON.stringify(S,null,1)+';';jobs.forEach(j=>j.undo());
+const fresh=files.filter(f=>!DONE.has(f.key));
+fresh.push({path:'data/data.js',b64:b64t(js)});
+await ghCommit(c,fresh,fresh.length>1?'upload files + update data':'update data');
+files.forEach(f=>DONE.set(f.key,f.ver));
+tos('✅ تم الحفظ'+(fresh.length>1?' ('+(fresh.length-1)+' ملف)':'')+'، يظهر للزوار خلال دقيقة تقريبًا')}
+catch(e){tos('⚠ فشل الحفظ ('+e.message+')')}
+finally{saving=false;if(again){again=false;save()}}}
 document.addEventListener('click',e=>{const b=e.target.closest('[data-a]');if(!b)return;const D=b.dataset,a=D.a;
 if(a=='zm'){if(!e.target.closest('a'))zm(b);return}
 if(a=='nav'){$('#ov').innerHTML='';const u=U(D.h);try{QV='';UF='';history.pushState(null,'',u);render();scrollTo(0,0);const m=$('main');if(m)m.scrollTop=0}catch(_){location.href=u}return}
